@@ -41,36 +41,32 @@ class FERDataset(Dataset):
         
         return image, label
 
-def get_transforms(is_train=True):
-    if is_train:
-        return transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(10),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                              std=[0.229, 0.224, 0.225])
-        ])
-    else:
-        return transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                              std=[0.229, 0.224, 0.225])
-        ])
+def get_transforms(is_train=True, is_norm=True):
+    transform_list = [
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip() if is_train else transforms.Lambda(lambda x: x),
+        transforms.RandomRotation(10) if is_train else transforms.Lambda(lambda x: x),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2) if is_train else transforms.Lambda(lambda x: x),
+        transforms.ToTensor()  # 이미지를 [0, 1] 범위의 텐서로 변환
+    ]
+    
+    if is_norm:
+        transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                                   std=[0.229, 0.224, 0.225]))
+    
+    return transforms.Compose(transform_list)
 
-def create_dataloaders(data_dir, batch_size=32, num_workers=4):
+def create_dataloaders(data_dir, batch_size=32, num_workers=4, is_norm=True):
     train_dataset = FERDataset(
         root_dir=data_dir,
         is_train=True,
-        transform=get_transforms(is_train=True)
+        transform=get_transforms(is_train=True, is_norm=is_norm)
     )
     
     val_dataset = FERDataset(
         root_dir=data_dir,
         is_train=False,
-        transform=get_transforms(is_train=False)
+        transform=get_transforms(is_train=False, is_norm=is_norm)
     )
     
     train_loader = DataLoader(
@@ -90,3 +86,4 @@ def create_dataloaders(data_dir, batch_size=32, num_workers=4):
     )
     
     return train_loader, val_loader
+
