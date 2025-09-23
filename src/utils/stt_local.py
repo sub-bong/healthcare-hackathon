@@ -17,7 +17,7 @@ _asr = pipeline(
     model=ASR_MODEL,
     device=ASR_DEVICE,
     chunk_length_s=30,
-    generate_kwargs={"task":"transcribe", "language":"<|ko|>"}
+    generate_kwargs={"task":"transcribe", "language":"ko"}
 )
 
 def transcribe_video(video_path: str) -> str:
