@@ -11,11 +11,13 @@ client = OpenAI()  # .env에서 키 로드된다고 가정
 
 EMO_LABELS = ["happy","neutral","sad","angry","fear","disgust","surprise"]
 
+EMO_LABELS = ["happy","neutral","sad","angry","fear","disgust","surprise"]
+
 def classify_text_emotion(text: str) -> Dict:
     prompt = f"""
 다음 한국어 텍스트의 감정을 분석하세요.
 - 주 감정(primary): 가장 강하게 나타나는 감정 1개
-- 보조 감정(secondary): 함께 감지되는 부가적인 감정 0~2개
+- 보조 감정(secondary): 함께 감지되는 부가적인 감정 1개
   * 신뢰도 0.3 이상인 경우만 포함
   * 주 감정과 충분히 구별되는 경우만 포함
   * 없으면 빈 리스트
@@ -42,83 +44,124 @@ JSON으로만 답하세요:
             {"role": "user", "content": prompt},
         ],
     )
-    data = json.loads(resp.choices[0].message.content)
-    data.setdefault("primary", {"label":"neutral","confidence":0.5})
-    secs = data.get("secondary", [])
-    data["secondary"] = [s for s in secs if s.get("confidence",0)>=0.3][:2]
+    content = resp.choices[0].message.content
+    data = json.loads(content)
+
+    # 응답 검증 및 기본값 설정
+    if "primary" not in data:
+        data["primary"] = {"label": "neutral", "confidence": 0.5}
+    if "secondary" not in data:
+        data["secondary"] = []
+
+    # 보조 감정 필터링 (신뢰도 낮은 것 제거)
+    data["secondary"] = [s for s in data["secondary"] if s.get("confidence", 0) >= 0.3][:2]
+
     return data
 
+# === 2) 얼굴 감정 ===
 def run_face_emotion(video_path: str) -> List[Dict]:
     """
     TODO: 실제 얼굴/표정 모델 연결.
     지금은 빈 리스트 반환 (텍스트만 사용).
     """
-    return []
+    return []  # 예: [{"label":"happy","confidence":0.72}]
 
-def fuse_emotion(video_preds: List[Dict], text_pred: Dict,
-                 min_conf=0.35, max_video_emotions=4, max_total_emotions=6) -> Dict:
+# === 3) 융합 로직 (얼굴 우선, 근소 차이는 텍스트 허용) ===
+def fuse_emotion(video_emotions: Dict, text_pred: Dict) -> Dict:
+    if isinstance(video_emotions, list):
+        ve_sorted = sorted(
+            [x for x in video_emotions if isinstance(x, dict) and "label" in x and "confidence" in x],
+            key=lambda x: float(x.get("confidence", 0.0)),
+            reverse=True
+        )
+        video_emotions = {
+            "first_emotion": ve_sorted[0] if len(ve_sorted) > 0 else None,
+            "second_emotion": ve_sorted[1] if len(ve_sorted) > 1 else None,
+        }
+    elif video_emotions is None:
+        video_emotions = {"first_emotion": None, "second_emotion": None}
 
-    valid_video_emotions = [v for v in video_preds if v["confidence"] >= min_conf]
-    valid_video_emotions.sort(key=lambda x: x["confidence"], reverse=True)
-    top_video_emotions = valid_video_emotions[:max_video_emotions]
-
+    # 1. 텍스트에서 상위 2개 추출
     text_emotions = []
     if text_pred.get("primary"):
         text_emotions.append(text_pred["primary"])
     text_emotions.extend(text_pred.get("secondary", []))
+    text_emotions.sort(key=lambda x: x["confidence"], reverse=True)
+    text_top2 = text_emotions[:2]
     
-    emotion_dict = {}
-
-    for v_emo in top_video_emotions:
-        label = v_emo["label"]
-        if label not in emotion_dict:
-            emotion_dict[label] = {
-                "label": label,
-                "confidence": round(v_emo["confidence"], 2),
-                "source": "video"
-            }
+    # 2. 결과 구조 초기화
+    result = {
+        "first_emotion": video_emotions.get("first_emotion"),
+        "second_emotion": video_emotions.get("second_emotion"),
+        "text_support": [],
+        "source": "video" if video_emotions.get("first_emotion") else "text"
+    }
     
-    for t_emo in text_emotions:
-        label = t_emo["label"]
-        if label not in emotion_dict and t_emo["confidence"] >= min_conf * 0.8:  
-            emotion_dict[label] = {
-                "label": label,
-                "confidence": round(t_emo["confidence"], 2),
+    # 3. 영상 감정이 없으면 텍스트로 대체
+    if not result["first_emotion"] and text_top2:
+        result["first_emotion"] = {
+            "label": text_top2[0]["label"],
+            "confidence": round(text_top2[0]["confidence"], 2),
+            "source": "text"
+        }
+        result["source"] = "text_fallback"
+        
+        if len(text_top2) > 1:
+            result["second_emotion"] = {
+                "label": text_top2[1]["label"],
+                "confidence": round(text_top2[1]["confidence"], 2),
                 "source": "text"
             }
     
-    all_emotions = list(emotion_dict.values())
-    all_emotions.sort(key=lambda x: x["confidence"], reverse=True)
-    all_emotions = all_emotions[:max_total_emotions]
-
-    if all_emotions:
-        primary = all_emotions[0]
-        secondary = all_emotions[1:]
-    else:
-        primary = {"label": "neutral", "confidence": 0.5, "source": "default"}
-        secondary = []
+    # 4. 텍스트 보조 감정 추가 (중복 제거)
+    existing_labels = set()
+    if result["first_emotion"]:
+        existing_labels.add(result["first_emotion"]["label"])
+    if result["second_emotion"]:
+        existing_labels.add(result["second_emotion"]["label"])
     
-    return {
-        "primary": primary,
-        "secondary": secondary,
-        "metadata": {
-            "video_count": len(top_video_emotions),
-            "text_count": len([e for e in all_emotions if e["source"] == "text"]),
-            "total_count": len(all_emotions)
-        }
-    }
+    for t_emo in text_top2:
+        if t_emo["label"] not in existing_labels:
+            result["text_support"].append({
+                "label": t_emo["label"],
+                "confidence": round(t_emo["confidence"], 2)
+            })
+    
+    # 5. 기본값 처리
+    if not result["first_emotion"]:
+        result["first_emotion"] = {"label": "neutral", "confidence": 0.5, "source": "default"}
+    
+    return result
 
+
+
+
+# === 4) 공감 멘트 ===
 def build_empathy(fused: Dict, text: str) -> str:
-
-    primary = fused['primary']
-    emotion_desc = f"주 감정: {primary['label']} (신뢰도 {primary['confidence']})"
+    """
+    first_emotion, second_emotion, text_support를 활용한 공감 메시지 생성
+    """
+    # 첫 번째 감정 (메인)
+    first = fused['first_emotion']
+    emotion_desc = f"주 감정: {first['label']} (신뢰도 {first['confidence']})"
     
-    if fused.get('secondary'):
-        secondary_labels = [f"{s['label']}({s['confidence']})" for s in fused['secondary']]
-        emotion_desc += f"\n보조 감정: {', '.join(secondary_labels[:3])}"  
+    # 두 번째 감정
+    if fused.get('second_emotion'):
+        second = fused['second_emotion']
+        emotion_desc += f"\n부 감정: {second['label']} (신뢰도 {second['confidence']})"
     
-    video_dominant = primary.get('source') == 'video'
-    source_hint = "표정에서 주로 읽히는" if video_dominant else "말씀에서 주로 느껴지는"
+    # 텍스트 보조 감정
+    if fused.get('text_support'):
+        support_labels = [s['label'] for s in fused['text_support']]
+        emotion_desc += f"\n보조 감정: {', '.join(support_labels)}"
+    
+    # 감정 소스 힌트
+    if fused.get('source') == 'video':
+        source_hint = "표정에서 읽히는"
+    elif fused.get('source') == 'text_fallback':
+        source_hint = "말씀에서 느껴지는"
+    else:
+        source_hint = "전반적으로 느껴지는"
     
     prompt = f"""
 아래 정보를 바탕으로 고령자에게 공감과 격려를 전하는 짧은 문단을 만드세요.
@@ -128,6 +171,7 @@ def build_empathy(fused: Dict, text: str) -> str:
 - 이모지/특수기호/괄호 사용 금지
 - 구조: 감사 → 감정 인식 → 공감/격려 → 맞춤 제안
 - {source_hint} 감정을 중심으로 응답
+- 주 감정을 가장 중요하게, 부 감정도 자연스럽게 언급
 
 감정 분석 결과:
 {emotion_desc}
@@ -145,14 +189,29 @@ def build_empathy(fused: Dict, text: str) -> str:
     )
     return resp.choices[0].message.content.strip()
 
-def make_emo_mission(fused: Dict, text: str, user_profile: Optional[UserProfile]=None) -> Dict:
-    emotion_desc = f"주 감정: {fused['primary']['label']} (신뢰도 {fused['primary']['confidence']})"
-    if fused.get('secondary'):
-        emotion_desc += " / 보조: " + ", ".join([s['label'] for s in fused['secondary']])
 
-    user_ctx = ""
+# === 5) 감정 기반 미션 ===
+def make_emo_mission(fused: Dict, text: str, user_profile: Optional[UserProfile] = None) -> Dict:
+    """감정 기반 미션 생성 (선택적으로 사용자 프로필 고려)"""
+
+    # 감정 설명 - 새로운 구조에 맞게 수정
+    first = fused['first_emotion']
+    emotion_desc = f"주 감정: {first['label']} (신뢰도 {first['confidence']})"
+    
+    if fused.get('second_emotion'):
+        second = fused['second_emotion']
+        emotion_desc += f"\n부 감정: {second['label']} (신뢰도 {second['confidence']})"
+    
+    # 텍스트 보조 감정도 포함
+    if fused.get('text_support'):
+        support_labels = [s['label'] for s in fused['text_support']]
+        emotion_desc += f"\n보조 감정: {', '.join(support_labels)}"
+
+    # 사용자 프로필이 있으면 추가
+    user_context = ""
     if user_profile:
-        user_ctx = f"""
+        user_context = f"""
+
 사용자 상황:
 - 거동 불편 여부: {'예 (이동 제한, 앉아서 가능한 활동 위주)' if user_profile.mobility_issue else '아니오 (자유로운 이동 가능)'}
 - 거주 형태: {'독거 (혼자서 안전하게 할 수 있는 활동)' if user_profile.living_arrangement == 'alone' else '가족과 함께 (가족 참여 가능)'}
@@ -165,35 +224,60 @@ def make_emo_mission(fused: Dict, text: str, user_profile: Optional[UserProfile]
 - 존댓말, 쉬운 어휘, 이모지/특수기호/괄호 금지
 - 의료·법률·위험 활동·개인정보 요구 금지
 - 출력은 JSON만: title(12자 이내), steps(60자 이내), duration(예: 3분), difficulty(very_easy|easy)
-{user_ctx}
+- 첫 번째 감정을 중심으로, 두 번째 감정도 고려하여 미션 설계
+{user_context}
 {emotion_desc}
 말씀 요지: {text[:120]}
 """
+
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
-        response_format={"type":"json_object"},
+        response_format={"type": "json_object"},
         temperature=0.3,
         messages=[
-            {"role":"system","content":"You write short, safe, elder-friendly tasks in Korean."},
-            {"role":"user","content":prompt},
+            {"role": "system", "content": "You write short, safe, elder-friendly tasks in Korean."},
+            {"role": "user", "content": prompt},
         ],
     )
-    return json.loads(resp.choices[0].message.content)
+    content = resp.choices[0].message.content
+    data = json.loads(content)
+    return data
 
-# 기존 run_core_pipeline 교체
+# === 6) 전체 실행 ===
+# === 기존의 run_full_pipeline을 두 개로 분리 ===
+
 def run_core_pipeline(video_path: str) -> Dict:
+    """
+    핵심 파이프라인
+    """
+    # 1) STT
     text = transcribe_video(video_path)
-    t_pred = classify_text_emotion(text)
-    fused = fuse_emotion(vid_pred=None, txt_pred=t_pred)  # ← 지금은 비디오 감정 없음(폴백)
-
+    
+    # 2) 감정 분석
+    text_pred = classify_text_emotion(text)
+    video_emotions = run_face_emotion(video_path)  # {"first_emotion": ..., "second_emotion": ...}
+    
+    # 3) 융합
+    fused = fuse_emotion(video_emotions, text_pred)
+    
+    # 4) 공감 메시지
     empathy = build_empathy(fused, text)
+    
     return {
         "stt_text": text,
-        "text_emotion": t_pred,
-        "fused_emotion": fused,     # ← 누락됐던 키 추가
+        "text_emotion": text_pred,
+        "video_emotions": video_emotions,
+        "fused_emotion": fused,
         "empathy": empathy
     }
 
-
-def generate_emo_mission(core_result: Dict, user_profile: Optional[UserProfile]=None) -> Dict:
-    return make_emo_mission(core_result["fused_emotion"], core_result["stt_text"], user_profile)
+def generate_emo_mission(core_result: Dict, user_profile: Optional[UserProfile] = None) -> Dict:
+    """
+    미션 생성 (사용자 프로필 선택적 고려)
+    """
+    mission = make_emo_mission(
+        core_result["fused_emotion"],
+        core_result["stt_text"],
+        user_profile  # 그대로 전달
+    )
+    return mission
