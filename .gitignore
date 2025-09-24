@@ -17,7 +17,10 @@ build/
 .ipynb_checkpoints
 
 # 환경 설정
-.env
+*.env
 .env.local
 
 .vscode
+*.face_y_n_model.pt
+*.ViT_model.pth
+*.yolov12n-face.pt
