@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>라디오 + 스케줄</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-500 to-blue-500 text-gray-900">
+    <!-- 헤더 -->
+    <header class="max-w-5xl mx-auto px-4 pt-6">
+      <h1 class="text-2xl md:text-3xl font-bold text-white">라디오 + 스케줄</h1>
+      <p class="mt-1">
+        <a href="/face" class="text-indigo-100 underline hover:text-white">표정 검출 페이지로 이동</a>
+      </p>
+    </header>
+
+    <input id="uid" value="user-001" hidden />
+
+    <!-- 메인 -->
+    <main class="max-w-5xl mx-auto px-4 py-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+      <!-- 라디오 -->
+      <section class="md:col-span-2">
+        <div class="bg-white rounded-2xl shadow-xl p-6">
+          <h2 class="text-lg font-semibold text-gray-800 mb-4">라디오</h2>
+
+          <div class="flex flex-col gap-3">
+            <button id="say-welcome" class="w-full rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 text-base font-semibold shadow">인사/안내 TTS</button>
+
+            <button id="radio-play" class="w-full rounded-xl bg-purple-600 hover:bg-purple-700 text-white px-4 py-3 text-base font-semibold shadow">근황 듣기</button>
+
+            <button id="wake" class="w-full rounded-xl bg-pink-500 hover:bg-pink-600 text-white px-4 py-3 text-base font-semibold shadow">“가가야” 호출</button>
+
+            <div class="flex items-center gap-3">
+              <button id="hotword-toggle" class="rounded-xl bg-rose-500 hover:bg-rose-600 text-white px-4 py-2 text-sm font-semibold shadow">가가야 대기 시작</button>
+              <span id="hotword-status" style="margin-left: 0.5rem; color: #666" class="text-sm">대기 중지</span>
+            </div>
+
+            <p class="text-sm text-gray-600">
+              <small>“가가야” 이후 말씀을 5초간 녹음해 텍스트로 저장합니다.</small>
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 스케줄 상호작용 -->
+      <section>
+        <div class="bg-white rounded-2xl shadow-xl p-6 h-full">
+          <h2 class="text-lg font-semibold text-gray-800 mb-4">스케줄 상호작용</h2>
+
+          <button id="sched-run" class="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-3 text-base font-semibold shadow mb-3">
+            정서적 지지 + 미션 실행
+          </button>
+
+          <pre id="sched-out" class="min-h-[8rem] whitespace-pre-wrap text-sm bg-gray-50 border border-gray-200 rounded-xl p-3 text-gray-700 mb-3"></pre>
+
+          <audio id="sched-audio" controls class="w-full" hidden></audio>
+        </div>
+      </section>
+    </main>
+    <script>
+      const uid = () => document.getElementById("uid").value || "user-001";
+      const say = async (text) => {
+        const r = await fetch("/api/func/tts", { method: "POST", body: new URLSearchParams({ text }) });
+        const j = await r.json();
+        const a = new Audio("data:audio/mp3;base64," + j.b64);
+        try {
+          await a.play();
+        } catch (e) {
+          console.warn("Autoplay blocked (TTS)");
+        }
+      };
+
+      async function recordAndSave(seconds = 5) {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const rec = new MediaRecorder(s);
+        const chunks = [];
+        return new Promise((resolve) => {
+          rec.ondataavailable = (e) => chunks.push(e.data);
+          rec.onstop = async () => {
+            const blob = new Blob(chunks, { type: "audio/webm" });
+            const fd = new FormData();
+            fd.append("audio", blob, "talk.webm");
+            fd.append("user_id", uid());
+            await fetch("/api/func/stt", { method: "POST", body: fd });
+            resolve();
+          };
+          rec.start();
+          setTimeout(() => rec.stop(), seconds * 1000);
+        });
+      }
+
+      // “가가야” 호출을 통해 이야기 등록 기능 수행 -> Web Speech API 자동대기
+      let recog,
+        listening = false,
+        busy = false;
+      let radioPlaying = false; // 근황 듣기 상태 전역 관리
+
+      function startRecognizer() {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) {
+          console.warn("Web Speech API 미지원");
+          return;
+        }
+        recog = new SR();
+        recog.lang = "ko-KR";
+        recog.continuous = true;
+        recog.interimResults = true;
+
+        recog.onresult = async (evt) => {
+          if (busy) return;
+          const text = Array.from(evt.results)
+            .map((r) => r[0].transcript)
+            .join("")
+            .trim();
+          if (!text) return;
+          if (/가\s*가\s*야/.test(text)) {
+            // “가가야” 변형 포함
+            busy = true;
+            try {
+              try {
+                recog.stop();
+              } catch {}
+              await say("네 어르신 말씀하세요.");
+              await recordAndSave(5);
+              await say("그렇군요.");
+            } finally {
+              busy = false;
+              if (listening)
+                setTimeout(() => {
+                  try {
+                    recog.start();
+                  } catch {}
+                }, 200);
+            }
+          }
+        };
+        recog.onend = () => {
+          if (listening && !busy) {
+            try {
+              recog.start();
+            } catch {}
+          }
+        };
+        recog.onerror = (e) => {
+          console.warn("speech error:", e.error);
+        };
+        listening = true;
+        try {
+          recog.start();
+        } catch (e) {
+          console.warn("recog.start() 실패", e);
+        }
+      }
+
+      // 페이지 진입 시 즉시 권한요청 -> 인식 시작
+      (async () => {
+        try {
+          await navigator.mediaDevices.getUserMedia({ audio: true }); // 권한 팝업 유도
+        } catch (e) {
+          console.warn("마이크 권한 거부됨", e);
+          return; // 권한 없으면 음성 호출 불가
+        }
+        startRecognizer();
+      })();
+    </script>
+
+    <script>
+      const playB64 = (b64) => new Audio("data:audio/mp3;base64," + b64).play();
+
+      async function tts(text) {
+        const r = await fetch("/api/func/tts", { method: "POST", body: new URLSearchParams({ text }) });
+        const j = await r.json();
+        return "data:audio/mp3;base64," + j.b64;
+      }
+
+      function playSrcAwait(src) {
+        return new Promise((res) => {
+          const a = new Audio(src);
+          a.onended = () => res();
+          a.onerror = () => res();
+          a.play().catch(() => res()); // 자동재생 차단 시 바로 통과
+        });
+      }
+
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      async function greetOnce() {
+        if (sessionStorage.getItem("greeted") === "1") return;
+        const src = await tts("안녕하세요, 어르신. 저를 클릭하시면, 오늘 다른 어르신 또는 다른 사람 근황을 들려 드리겠습니다.");
+        try {
+          await playSrcAwait(src);
+        } finally {
+          sessionStorage.setItem("greeted", "1");
+        }
+      }
+      window.addEventListener("load", greetOnce);
+
+      document.getElementById("say-welcome").onclick = async () => {
+        const src = await tts("안녕하세요, 어르신. 저를 클릭하시면, 오늘 다른 어르신 또는 다른 사람 근황을 들려 드리겠습니다.");
+        await playSrcAwait(src);
+      };
+
+      // 근황 듣기 기능 -> 한 번 클릭하면 여러 이야기 5초 텀으로 연속 재생
+      document.getElementById("radio-play").onclick = async () => {
+        if (radioPlaying) {
+          radioPlaying = false;
+          return; // 현재 재생 루프 중단 신호
+        }
+
+        radioPlaying = true;
+        const N = 30; // 원하는 개수
+        const res = await fetch("/api/func/radio-feed-batch?count=" + N);
+        const { texts } = await res.json();
+
+        for (const text of texts) {
+          if (!radioPlaying) break; // 중간에 멈추면 탈출
+          const src = await tts(text);
+          await playSrcAwait(src);
+          await sleep(3000); // 3초 텀
+        }
+
+        radioPlaying = false; // 종료 후 상태 초기화
+      };
+
+      // 수동으로 이야기 하기
+      document.getElementById("wake").onclick = async () => {
+        const prep = await fetch("/api/func/tts", { method: "POST", body: new URLSearchParams({ text: "네. 어떤 이야기를 하고 싶으세요? 어르신" }) });
+        playB64((await prep.json()).b64);
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const rec = new MediaRecorder(s);
+        const cs = [];
+        rec.ondataavailable = (e) => cs.push(e.data);
+        rec.onstop = async () => {
+          const blob = new Blob(cs, { type: "audio/webm" });
+          const fd = new FormData();
+          fd.append("audio", blob, "talk.webm");
+          fd.append("user_id", uid());
+          await fetch("/api/func/stt", { method: "POST", body: fd });
+          const ok = await fetch("/api/func/tts", { method: "POST", body: new URLSearchParams({ text: "그렇군요." }) });
+          playB64((await ok.json()).b64);
+        };
+        rec.start();
+        setTimeout(() => rec.stop(), 5000);
+      };
+
+      document.getElementById("sched-run").onclick = async () => {
+        const j = await (await fetch("/api/func/schedule-interact?user_id=" + encodeURIComponent(uid()))).json();
+        document.getElementById("sched-out").textContent = "감정=" + j.emotion + "\n\n[정서적 지지]\n" + j.support + "\n\n[미션]\n" + j.missions;
+        const a = document.getElementById("sched-audio");
+        a.src = "data:audio/mp3;base64," + j.tts_b64;
+        a.play();
+      };
+    </script>
+  </body>
+</html>

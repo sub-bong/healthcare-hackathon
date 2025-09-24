@@ -1,0 +1,343 @@
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>웹캠 감정 분석기 - AI 모델 연동</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .header {
+            text-align: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+
+        .header p {
+            margin: 10px 0 0 0;
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .webcam-section {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .webcam-section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        #video {
+            width: 100%;
+            max-width: 500px;
+            border-radius: 8px;
+            box-shadow: 0 2px 15px rgba(0,0,0,0.1);
+            background: #000;
+        }
+
+        .controls {
+            margin-top: 15px;
+            text-align: center;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1em;
+            margin: 5px;
+            transition: all 0.3s ease;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .response-section {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .response-section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        #llm-response {
+            min-height: 300px;
+            background: #f8f9fa;
+            border: 2px dashed #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            font-size: 1em;
+            line-height: 1.6;
+            color: #666;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+
+        #llm-response.has-content {
+            border: 2px solid #667eea;
+            background: #fff;
+            color: #333;
+        }
+
+        .loading {
+            text-align: center;
+            color: #667eea;
+            font-style: italic;
+        }
+
+        .error {
+            color: #dc3545;
+            background: #f8d7da;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+
+        .success {
+            color: #155724;
+            background: #d4edda;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 제목 헤더 -->
+    <div class="header">
+        <h1>🎥🧠 웹캠 감정 분석기</h1>
+        <p>실시간 웹캠으로 이미지를 캡처하고 AI 감정 분석 모델의 결과를 확인하세요</p>
+    </div>
+
+    <div class="container">
+        <!-- 웹캠 섹션 -->
+        <div class="webcam-section">
+            <h2>📹 웹캠 화면</h2>
+            <video id="video" autoplay muted></video>
+            <div class="controls">
+                <button id="start-btn" class="btn">웹캠 시작</button>
+                <button id="capture-btn" class="btn" disabled>감정 분석</button>
+                <button id="stop-btn" class="btn" disabled>웹캠 정지</button>
+            </div>
+            <canvas id="canvas" style="display: none;"></canvas>
+        </div>
+
+        <!-- AI 응답 섹션 -->
+        <div class="response-section">
+            <h2>🤖 AI 감정 분석 결과</h2>
+            <div id="llm-response">
+                캡처된 이미지의 AI 감정 분석 결과가 여기에 표시됩니다.
+
+                사용 방법:
+                1. "웹캠 시작" 버튼을 클릭하여 웹캠을 활성화
+                2. "감정 분석" 버튼을 클릭하여 현재 화면 캡처 및 분석
+                3. AI 모델이 감정을 분석한 결과 확인
+
+                🎯 지원 감정: 화남, 혐오, 두려움, 행복, 중립, 슬픔, 놀람
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let video = document.getElementById('video');
+        let stream = null;
+        let ws = null;
+        let isRealtime = false;
+        let realtimeInterval = null;
+
+        const startBtn = document.getElementById('start-btn');
+        const captureBtn = document.getElementById('capture-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const responseDiv = document.getElementById('llm-response');
+
+        // 웹캠 시작
+        startBtn.addEventListener('click', async () => {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({video: {width: 640, height: 480}});
+                video.srcObject = stream;
+                startBtn.disabled = true;
+                captureBtn.disabled = false;
+                stopBtn.disabled = false;
+                showMessage('웹캠이 시작되었습니다.', 'success');
+            } catch (err) {
+                showMessage(`웹캠 오류: ${err.message}`, 'error');
+            }
+        });
+
+        // 실시간 모드 토글
+        captureBtn.addEventListener('click', () => {
+            if (!isRealtime) {
+                startRealtime();
+                captureBtn.textContent = '실시간 중지';
+                isRealtime = true;
+            } else {
+                stopRealtime();
+                captureBtn.textContent = '감정 분석';
+                isRealtime = false;
+            }
+        });
+
+        // 웹캠 정지
+        stopBtn.addEventListener('click', () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+                stream = null;
+            }
+            stopRealtime();
+            startBtn.disabled = false;
+            captureBtn.disabled = true;
+            stopBtn.disabled = true;
+            captureBtn.textContent = '감정 분석';
+            isRealtime = false;
+            showMessage('웹캠이 정지되었습니다.', 'success');
+        });
+
+        // 프레임 캡처 함수
+        function captureFrame() {
+            const canvas = document.getElementById('canvas');
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            return canvas.toDataURL('image/jpeg', 0.8);
+        }
+
+        // 실시간 분석 시작
+        function startRealtime() {
+            try {
+                ws = new WebSocket('ws://localhost:8000/ws');
+                
+                ws.onopen = () => {
+                    showMessage('서버에 연결되었습니다. 실시간 감정 분석을 시작합니다.', 'success');
+                    
+                    // 1초마다 프레임 캡처 및 전송
+                    realtimeInterval = setInterval(() => {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            const imageData = captureFrame();
+                            // base64에서 "data:image/jpeg;base64," 부분 제거
+                            const base64Data = imageData.split(',')[1];
+                            ws.send(JSON.stringify({image: base64Data}));
+                        }
+                    }, 1000);
+                };
+                
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    displayResponse(data.analysis);
+                };
+                
+                ws.onerror = (error) => {
+                    showMessage('WebSocket 연결 오류가 발생했습니다.', 'error');
+                    stopRealtime();
+                    captureBtn.textContent = '감정 분석';
+                    isRealtime = false;
+                };
+                
+                ws.onclose = () => {
+                    showMessage('서버 연결이 끊어졌습니다.', 'error');
+                    stopRealtime();
+                    captureBtn.textContent = '감정 분석';
+                    isRealtime = false;
+                };
+                
+            } catch (error) {
+                showMessage('WebSocket 연결 중 오류가 발생했습니다.', 'error');
+            }
+        }
+
+        // 실시간 분석 중지
+        function stopRealtime() {
+            if (realtimeInterval) {
+                clearInterval(realtimeInterval);
+                realtimeInterval = null;
+            }
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        // 결과 표시
+        function displayResponse(analysis) {
+            responseDiv.className = 'has-content';
+            responseDiv.textContent = analysis;
+        }
+
+        // 메시지 표시
+        function showMessage(message, type) {
+            responseDiv.className = type;
+            responseDiv.textContent = message;
+            
+            // 3초 후에 기본 상태로 복원 (success나 일반 메시지의 경우)
+            if (type === 'success') {
+                setTimeout(() => {
+                    if (responseDiv.className === 'success') {
+                        responseDiv.className = '';
+                        responseDiv.textContent = `캡처된 이미지의 AI 감정 분석 결과가 여기에 표시됩니다.
+
+사용 방법:
+1. "웹캠 시작" 버튼을 클릭하여 웹캠을 활성화
+2. "감정 분석" 버튼을 클릭하여 현재 화면 캡처 및 분석
+3. AI 모델이 감정을 분석한 결과 확인
+
+🎯 지원 감정: 화남, 혐오, 두려움, 행복, 중립, 슬픔, 놀람`;
+                    }
+                }, 3000);
+            }
+        }
+    </script>
+    
+</body>
+</html>

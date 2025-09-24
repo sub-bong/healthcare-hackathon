@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>표정 검출</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body>
+    <!DOCTYPE html>
+    <html lang="ko">
+      <head>
+        <meta charset="utf-8" />
+        <title>표정 검출</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <script src="https://cdn.tailwindcss.com"></script>
+      </head>
+      <body class="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-500 to-blue-500 text-gray-900">
+        <header class="max-w-5xl mx-auto px-4 pt-6">
+          <h1 class="text-2xl md:text-3xl font-bold text-white">표정 검출(웹캠)</h1>
+          <p class="mt-1 text-indigo-100">
+            <a class="underline hover:text-white" href="/radio-schedule">라디오+스케줄로 이동</a>
+          </p>
+        </header>
+
+        <main class="max-w-5xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <!-- 좌: 카메라 & 액션 -->
+          <section class="lg:col-span-2">
+            <div class="bg-white rounded-2xl shadow-xl p-6">
+              <div class="flex flex-col gap-4">
+                <label class="flex items-center gap-3">
+                  <span class="text-sm font-medium text-gray-700">사용자 ID</span>
+                  <input id="uid" value="user-001" class="w-48 md:w-60 rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-indigo-500 px-3 py-2" />
+                </label>
+
+                <div class="relative w-full aspect-video max-w-xl rounded-2xl overflow-hidden border border-gray-200">
+                  <video id="cam" autoplay playsinline class="w-full h-full object-cover bg-black/70"></video>
+                  <p class="absolute bottom-2 right-3 text-xs md:text-sm text-white bg-black/50 px-2 py-1 rounded">카메라 미리보기</p>
+                </div>
+
+                <div class="flex flex-wrap gap-3">
+                  <button
+                    id="speak-record"
+                    class="inline-flex items-center justify-center rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 text-base font-semibold shadow"
+                  >
+                    안내 TTS + 1.5초 측정
+                  </button>
+                  <button
+                    id="recapture"
+                    class="inline-flex items-center justify-center rounded-xl bg-purple-600 hover:bg-purple-700 text-white px-4 py-3 text-base font-semibold shadow"
+                  >
+                    다시 측정
+                  </button>
+                  <button
+                    id="capture-detector"
+                    class="inline-flex items-center justify-center rounded-xl bg-pink-500 hover:bg-pink-600 text-white px-4 py-3 text-base font-semibold shadow"
+                  >
+                    서버 추론
+                  </button>
+                </div>
+
+                <div class="flex items-center gap-3">
+                  <span class="text-sm text-gray-600">현재 감정</span>
+                  <span id="label" class="inline-flex items-center rounded-full bg-indigo-100 px-3 py-1 text-base font-semibold text-indigo-800"> 감정: - </span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 우: 로그 -->
+          <aside>
+            <div class="bg-white rounded-2xl shadow-xl p-6 h-full">
+              <h2 class="text-lg font-semibold mb-3 text-gray-800">활동 로그</h2>
+              <div id="log" class="min-h-[8rem] whitespace-pre-wrap text-sm bg-gray-50 border border-gray-200 rounded-xl p-3 text-gray-700"></div>
+            </div>
+          </aside>
+        </main>
+
+        <!-- 숨김 요소 -->
+        <video id="cam_hidden" autoplay playsinline width="360" height="270" class="hidden"></video>
+        <canvas id="crop" width="360" height="270" class="hidden"></canvas>
+        <canvas id="crop_hidden" width="360" height="270" class="hidden"></canvas>
+
+        <!-- 기존 스크립트들은 그대로 유지 -->
+      </body>
+    </html>
+
+    <script>
+      async function speak(text) {
+        const r = await fetch("/api/func/tts", { method: "POST", body: new URLSearchParams({ text }) });
+        const j = await r.json();
+        const a = new Audio("data:audio/mp3;base64," + j.b64);
+        try {
+          await a.play();
+        } catch (e) {
+          // 자동 재생 차단 시: 안내 버튼 노출
+          const b = document.createElement("button");
+          b.textContent = "안내 듣기";
+          b.onclick = async () => {
+            await a.play();
+            b.remove();
+          };
+          document.body.prepend(b);
+        }
+      }
+      window.addEventListener("load", () => {
+        speak("어르신, 오늘도 좋은 하루네요. 중간에 있는 저를 한 번 눌러 보시겠어요? 같이. 대화 나눠요!");
+      });
+    </script>
+
+    <script>
+      const uid = () => document.getElementById("uid").value || "user-001";
+      const playB64 = (b64) => new Audio("data:audio/mp3;base64," + b64).play();
+      const log = (m) => {
+        const el = document.getElementById("log");
+        el.textContent += m + "\n";
+      };
+    </script>
+
+    <script type="module">
+      import { FaceDetector, FilesetResolver } from "/static/vendor/tasks-vision/vision_bundle.mjs";
+
+      const uuid = () => document.getElementById("uid").value || "user-001";
+      const cam = document.getElementById("cam");
+      const crop = document.getElementById("crop");
+      const labelEl = document.getElementById("label");
+
+      let detector;
+
+      async function ensureDetector() {
+        if (detector) return detector;
+
+        const ROOT = "/static/vendor/tasks-vision";
+        const vision = await FilesetResolver.forVisionTasks(`${ROOT}/wasm`);
+
+        detector = await FaceDetector.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: `${ROOT}/models/blaze_face_short_range.tflite`, // ← 문자열 경로
+          },
+          runningMode: "VIDEO", // ← detectForVideo() 쓸 거면 필수
+        });
+
+        return detector;
+      }
+
+      async function ensureCam() {
+        if (!cam.srcObject) cam.srcObject = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+
+      function toPxBox(bbox, vw, vh, margin = 0.25) {
+        let x = bbox.originX,
+          y = bbox.originY,
+          w = bbox.width,
+          h = bbox.height;
+        x = Math.max(0, x - w * margin);
+        y = Math.max(0, y - h * margin);
+        w = Math.min(1 - x, w * (1 + 2 * margin));
+        h = Math.min(1 - y, h * (1 + 2 * margin));
+        return { x: Math.floor(x * vw), y: Math.floor(y * vh), w: Math.floor(w * vw), h: Math.floor(h * vh) };
+      }
+
+      /* STT 이후: Detector 1프레임 → 크롭 → /api/func/face 업로드(.pt 분류) */
+      async function captureFaceAfterSTT() {
+        await ensureCam();
+        await ensureDetector();
+        await new Promise((r) => setTimeout(r, 200));
+        const vw = cam.videoWidth,
+          vh = cam.videoHeight;
+        const res = await detector.detectForVideo(cam, performance.now());
+        if (!res.detections || res.detections.length === 0) return;
+        const best = res.detections.sort((a, b) => b.boundingBox.width * b.boundingBox.height - a.boundingBox.width * a.boundingBox.height)[0].boundingBox;
+        const box = toPxBox(best, vw, vh, 0.25);
+
+        const ctx = crop.getContext("2d");
+        crop.width = box.w;
+        crop.height = box.h;
+        ctx.drawImage(cam, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
+        crop.toBlob(
+          async (b) => {
+            const fd = new FormData();
+            fd.append("user_id", uuid());
+            fd.append("frame", b, "face.jpg");
+            const r = await fetch("/api/func/face", { method: "POST", body: fd });
+            const j = await r.json();
+            if (labelEl) labelEl.textContent = "감정: " + j.label;
+          },
+          "image/jpeg",
+          0.9
+        );
+      }
+
+      /* 버튼: 안내 TTS → 5초 녹음 → /stt 저장 → 직후 얼굴 캡처 업로드 */
+      document.getElementById("speak-record").onclick = async () => {
+        // 안내
+        const t = await fetch("/api/func/tts", { method: "POST", body: new URLSearchParams({ text: "어르신, 기억에 남았던 일은, 무엇인가요?" }) });
+        new Audio("data:audio/mp3;base64," + (await t.json()).b64).play();
+
+        // 녹음
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const rec = new MediaRecorder(s);
+        const cs = [];
+        rec.ondataavailable = (e) => cs.push(e.data);
+        rec.onstop = async () => {
+          // STT 저장
+          const blob = new Blob(cs, { type: "audio/webm" });
+          const fd = new FormData();
+          fd.append("audio", blob, "talk.webm");
+          fd.append("user_id", uid());
+          await fetch("/api/func/stt", { method: "POST", body: fd });
+
+          // 얼굴 캡처 + 업로드(.pt 분류/DB 저장)
+          await captureFaceAfterSTT();
+
+          // 완료 안내
+          const ok = await fetch("/api/func/tts", { method: "POST", body: new URLSearchParams({ text: "그렇군요. 어르신." }) });
+          new Audio("data:audio/mp3;base64," + (await ok.json()).b64).play();
+        };
+        rec.start();
+        setTimeout(() => rec.stop(), 5000);
+      };
+    </script>
+  </body>
+</html>

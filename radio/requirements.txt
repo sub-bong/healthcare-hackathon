@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+sqlalchemy>=2
+python-dotenv
+jinja2
+openai
+langchain
+langchain-openai
+apscheduler
+httpx
+psycopg[binary]
+torch
+torchvision
+pillow
+numpy
+psycopg2-binary
+python-multipart
